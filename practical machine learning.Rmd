@@ -1,0 +1,97 @@
+---
+title: "Practical Machine Learning"
+author: "Wtg"
+date: "24 October 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Description 
+Activity trackers were used by a group of enthusiasts to measure their movements regularly to evaluate the quality of physical exercise that they partake. In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which the exercise which was conducted, which included the following categories: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Original data source: http://groupware.les.inf.puc-rio.br/har#ixzz4xRyJPm3N
+
+## Load Libraries and Datasets
+
+Load necessary packages.
+```{r libraries}
+library(caret)
+library(randomForest)
+library(rpart)
+library(xgboost)
+```
+Both the training data and test data are loaded into R.
+
+```{r load,cache=TRUE}
+setwd("~/Data Science Specialisation")
+train<-read.csv("pml-training.csv",as.is=TRUE,na.strings=c("NA","","#DIV/0!"))
+test<-read.csv("pml-testing.csv",as.is=TRUE,na.strings=c("NA","","#DIV/0!"))
+set.seed(1) # set random number generator for reproducibility of results. 
+```
+
+## Data processing 
+We remove variables that contain NA values and remove identifiers for each observation given by columns 1 to 7. 
+```{r clean}
+train<-train[,colSums(is.na(train))==0]
+dim(train)
+#remove first 7 columns which are clearly not predictor variables. 
+train<-train[,8:60]
+```
+
+The training data is partitioned into the training subset and validation subset in a 60-40 ratio.  
+```{r partition}
+trainindex<-createDataPartition(train$classe,p=0.6,list=FALSE)
+traindat<-train[trainindex,]
+valdat<-train[-trainindex,]
+```
+
+# Model Selection 
+Since this is a multi-category classification problem and we prioritise prediction accuracy over interpretability, we consider a random forest paradigm instead of a single decision tree model which would be likely to overfit the training set. 
+```{r ranfor,cache=TRUE}
+mod1 <- train(classe ~ ., method="rf",trControl=trainControl(method = "cv", number = 4), data=traindat)
+print(mod1)
+```
+
+
+Inbag and out-of-bag prediction results are shown below for mod1. 
+```{r predict}
+preds1<-predict(mod1,data=traindat)
+confusionMatrix(preds1,traindat$classe)
+valpreds<-predict(mod1,newdata=valdat)
+confusionMatrix(valpreds,valdat$classe)
+```
+
+From above, it may be observed that the rf model has best accuracy at 0.989 on the inbag sample with mtry=27, with a similar accuracy of 0.99 on the test set. Prediction accuracy is poorest for Class C, but results all lie above 0.99.
+
+```{r varimp}
+varImp(mod1)
+```
+
+The table above shows the variables in order of descending importance. Roll_belt, pitch_forearm, yaw_belt and pitch belt are among the most important variables in the fitted model.  
+
+We try to fit a new model by boosting. The data is split into the predictors and outcome to fit the xgboost model, with the learning rate specified by eta, number of iterations nrounds, and the number of splits given by maxdepth. The objective multi:softmax returns the predicted class for each observation, with 5 different classes indicated by A,B,C,D and E. 
+```{r boost}
+trainy<-as.numeric(factor(traindat$classe,levels=c("A","B","C","D","E")))-1
+trainx<-as.matrix(traindat[,1:52])
+valy<-as.numeric(factor(valdat$classe,levels=c("A","B","C","D","E")))-1
+valx<-as.matrix(valdat[,1:52])
+mod2<-xgboost(data=trainx,label=trainy,maxdepth=2,eta=1,nrounds=30,objective="multi:softmax",num_class=5)
+#inbag test
+confusionMatrix(trainy,predict(mod2,newdata=trainx))
+#outofbag test
+confusionMatrix(valy,predict(mod2,newdata=valx))
+```
+# Conclusion
+Comparing mod1 and mod2, the random forest in mod1 seems to be a better model as it yields highe precision and accuracy on both the training and test data. Class C is most difficult to predict in model 1, while Class D is more difficult for model 2. The misclassification rate on the validation set may be taken as an estimate of the out-of-sample error. We observe that the insample error is always slightly smaller than the out-of-sample error, hence the need for the validation set to estimate the out of sample error for our predictions on the actual test data. We will use mod1 for generating predictions on the independent test data in pml-testing.csv. 
+
+# Testing on testcsv
+We now generate predictions on the independent test set as follows.
+```{r testdata}
+test<-test[,colnames(train)[-ncol(train)]]
+preds<-predict(mod1,newdata=test)
+print(preds)
+```
